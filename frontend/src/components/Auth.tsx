@@ -3,10 +3,10 @@ import { useState } from "react"
 import {
   Card,
   CardContent,
-  CardDescription,
   CardFooter,
   CardHeader,
   CardTitle,
+  CardDescription,
 } from "@/components/ui/card"
 
 import { Input } from "@/components/ui/input"
@@ -14,13 +14,30 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { toast } from "@/components/ui/toast"
+import { signOut, type User } from "firebase/auth"
+import { auth } from "@/config/firebase"
+import { createBackendSession } from "@/services/api"
+import { useAuth } from "@/context/AuthContext"
 
-import { ArrowLeft, ArrowRight } from "lucide-react"
+import {
+  registerUser,
+  loginUser,
+  loginWithGoogle,
+} from "@/services/authService"
+
+import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react"
 
 type AuthMode = "LOG_IN" | "SIGN_UP"
 
+type AuthFormData = {
+  name: string
+  email: string
+  password: string
+  confirmPassword: string
+}
+
 type Question = {
-  key: string
+  key: keyof AuthFormData
   heading: string
   question: string
   inputType: string
@@ -74,92 +91,208 @@ const questions: Record<AuthMode, Question[]> = {
       inputType: "password",
       placeholder: "Enter your password again",
     },
-    {
-      key: "otp",
-      heading: "You are there",
-      question: "Please enter one time password sent to your email",
-      inputType: "text",
-      placeholder: "Enter the code",
-    },
   ],
 }
 
+const initialFormData: AuthFormData = {
+  name: "",
+  email: "",
+  password: "",
+  confirmPassword: "",
+}
+
 export default function Auth() {
+  
+  const { refreshUser } = useAuth()
   const [authState, setAuthState] = useState<AuthMode>("LOG_IN")
   const [step, setStep] = useState(0)
-  const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false)
+
+  const [formData, setFormData] = useState<AuthFormData>(initialFormData)
 
   const currentQuestions = questions[authState]
   const currentQuestion = currentQuestions[step]
 
-  const updateAnswer = (value: string) => {
-    setAnswers((prev) => ({
+ const establishSession = async (user: User) => {
+  try {
+    const idToken = await user.getIdToken()
+
+    await createBackendSession(idToken)
+
+    const currentUser = await refreshUser()
+
+    if (!currentUser) {
+      throw new Error("Unable to load your user profile.")
+    }
+  } catch (error) {
+    // Best-effort cleanup if session establishment fails.
+    try {
+      await logoutBackend()
+    } catch {
+      // Ignore cleanup errors; preserve the original error.
+    }
+
+    await signOut(auth)
+
+    throw error
+  }
+}
+
+  const handleChange = (field: keyof AuthFormData, value: string) => {
+    setFormData((prev) => ({
       ...prev,
-      [currentQuestion.key]: value,
+      [field]: value,
     }))
   }
 
   const changeMode = (mode: AuthMode) => {
+    if (isSubmitting) return
+
     setAuthState(mode)
     setStep(0)
-    setAnswers({})
+    setFormData({ ...initialFormData })
   }
 
-  const handleNext = () => {
-    const value = answers[currentQuestion.key]?.trim()
+  const validateField = (key: keyof AuthFormData): boolean => {
+    const value = formData[key].trim()
 
-    if (!value) return
+    if (!value) return false
 
-    if (currentQuestion.key === "email" && !/^\S+@\S+\.\S+$/.test(value)) {
+    if (key === "name" && value.length < 2) {
+      toast.add({
+        title: "Invalid name",
+        description: "Name must contain at least 2 characters.",
+        type: "error",
+      })
+      return false
+    }
+
+    if (key === "email" && !/^\S+@\S+\.\S+$/.test(value)) {
       toast.add({
         title: "Invalid email",
         description: "Please enter a valid email address.",
         type: "error",
       })
-      return
+      return false
     }
 
-    if (currentQuestion.key === "password" && value.length < 8) {
+    if (key === "password" && value.length < 8) {
       toast.add({
-        title: "Invalid Password",
-        description: "Password must be 8 digit.",
+        title: "Invalid password",
+        description: "Password must contain at least 8 characters.",
         type: "error",
       })
-      return
+      return false
     }
 
     if (
-      currentQuestion.key === "confirmPassword" &&
-      value !== answers.password
+      key === "confirmPassword" &&
+      formData.password !== formData.confirmPassword
     ) {
       toast.add({
         title: "Password doesn't match",
-        description: "Please type same password again.",
+        description: "Please enter the same password again.",
         type: "error",
       })
-      return
+      return false
     }
+
+    return true
+  }
+
+  const handleSubmit = async () => {
+    if (isSubmitting) return
+
+    setIsSubmitting(true)
+
+    try {
+      if (authState === "SIGN_UP") {
+        const result = await registerUser(
+          formData.name.trim(),
+          formData.email.trim(),
+          formData.password
+        )
+
+        toast.add({
+          title: "Verification email sent",
+          description: result.message,
+          type: "success",
+        })
+
+        // Reset to login after successful registration.
+        setAuthState("LOG_IN")
+        setStep(0)
+        setFormData({ ...initialFormData })
+
+        return
+      }
+
+      const user = await loginUser(formData.email.trim(), formData.password)
+
+      await establishSession(user)
+
+      toast.add({
+        title: "Login successful",
+        description: "Welcome back to NOTION ZERO.",
+        type: "success",
+      })
+    } catch (error) {
+      toast.add({
+        title: "Authentication failed",
+        description:
+          error instanceof Error ? error.message : "Something went wrong.",
+        type: "error",
+      })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleNext = async () => {
+    if (isSubmitting) return
+
+    if (!validateField(currentQuestion.key)) return
 
     if (step < currentQuestions.length - 1) {
       setStep((prev) => prev + 1)
     } else {
-      handleSubmit()
+      await handleSubmit()
     }
   }
 
-  const handleSubmit = () => {
-    console.log({
-      mode: authState,
-      ...answers,
-    })
-
-    // Connect backend authentication here later.
-  }
-
   const handleBack = () => {
-    if (step > 0) setStep((prev) => prev - 1)
+    if (isSubmitting) return
+
+    if (step > 0) {
+      setStep((prev) => prev - 1)
+    }
   }
 
+  const handleGoogleLogin = async () => {
+    if (isSubmitting || isGoogleLoading) return
+
+    setIsGoogleLoading(true)
+
+    try {
+      const user = await loginWithGoogle()
+      await establishSession(user)
+      toast.add({
+        title: "Google login successful",
+        description: `Welcome, ${user.displayName || "back"}!`,
+        type: "success",
+      })
+    } catch (error) {
+      toast.add({
+        title: "Google login failed",
+        description:
+          error instanceof Error ? error.message : "Something went wrong.",
+        type: "error",
+      })
+    } finally {
+      setIsGoogleLoading(false)
+    }
+  }
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-24">
       <Card className="w-full max-w-md border-border bg-card shadow-xl">
@@ -202,34 +335,64 @@ export default function Auth() {
             id={currentQuestion.key}
             type={currentQuestion.inputType}
             placeholder={currentQuestion.placeholder}
-            value={answers[currentQuestion.key] || ""}
-            onChange={(e) => updateAnswer(e.target.value)}
+            value={formData[currentQuestion.key]}
+            onChange={(e) => handleChange(currentQuestion.key, e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") handleNext()
+              if (e.key === "Enter") {
+                e.preventDefault()
+                void handleNext()
+              }
             }}
+            disabled={isSubmitting}
             autoFocus
+            autoComplete={
+              currentQuestion.key === "email"
+                ? "email"
+                : currentQuestion.key === "password"
+                  ? authState === "LOG_IN"
+                    ? "current-password"
+                    : "new-password"
+                  : currentQuestion.key === "confirmPassword"
+                    ? "new-password"
+                    : "name"
+            }
             className="h-12"
           />
         </CardContent>
 
         <CardFooter className="flex gap-2">
           {step > 0 && (
-            <Button variant="outline" onClick={handleBack} className="h-11">
+            <Button
+              variant="outline"
+              onClick={handleBack}
+              disabled={isSubmitting}
+              className="h-11"
+            >
               <ArrowLeft size={16} />
             </Button>
           )}
 
           <Button
-            onClick={handleNext}
+            onClick={() => void handleNext()}
             className="h-11 flex-1"
-            disabled={!answers[currentQuestion.key]?.trim()}
+            disabled={isSubmitting || !formData[currentQuestion.key].trim()}
           >
-            {step === currentQuestions.length - 1
-              ? authState === "LOG_IN"
-                ? "Sign In"
-                : "Create Account"
-              : "Continue"}
-            <ArrowRight size={16} />
+            {isSubmitting ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Please wait...
+              </>
+            ) : (
+              <>
+                {step === currentQuestions.length - 1
+                  ? authState === "LOG_IN"
+                    ? "Sign In"
+                    : "Create Account"
+                  : "Continue"}
+
+                <ArrowRight size={16} />
+              </>
+            )}
           </Button>
         </CardFooter>
 
@@ -242,28 +405,32 @@ export default function Auth() {
             onClick={() =>
               changeMode(authState === "LOG_IN" ? "SIGN_UP" : "LOG_IN")
             }
-            className="ml-2 font-medium text-primary hover:underline"
+            disabled={isSubmitting}
+            className="ml-2 font-medium text-primary hover:underline disabled:opacity-50"
           >
             {authState === "LOG_IN" ? "Sign up" : "Sign in"}
           </button>
         </div>
       </Card>
 
-      {/* Fixed Google sign-in section */}
+      {/* Google sign-in section */}
       <div className="fixed bottom-0 left-0 flex w-full justify-center border-t border-border bg-background/95 px-4 py-5 backdrop-blur">
         <div className="w-full max-w-md">
           <div className="mb-4 flex items-center gap-3">
             <Separator className="flex-1" />
+
             <span className="text-xs text-muted-foreground">
               OR CONTINUE WITH
             </span>
+
             <Separator className="flex-1" />
           </div>
 
           <Button
             variant="outline"
             className="h-12 w-full gap-3"
-            onClick={() => console.log("Google sign in")}
+            disabled={isSubmitting || isGoogleLoading}
+            onClick={handleGoogleLogin}
           >
             <svg viewBox="0 0 48 48" className="h-5 w-5">
               <path

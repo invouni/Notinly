@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    // JavaScript version and module system
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // Project directories
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    // TypeScript safety
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    // Node.js types
+    "types": ["node"],
+
+    // Module compatibility
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    // Output
+    "sourceMap": true,
+
+    // Other settings
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}
